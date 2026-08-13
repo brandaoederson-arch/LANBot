@@ -1,0 +1,18 @@
+{
+  "name": "lanbot",
+  "version": "1.0.0",
+  "description": "Bot oficial do Clã SO NO TCHEREREU",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --max-old-space-size=64 index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.5",
+    "rss-parser": "^3.13.0"
+  }
+}

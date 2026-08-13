@@ -91,6 +91,18 @@ for (const file of eventFiles) {
 }
 
 // =========================
+// Servidor HTTP para Render
+// =========================
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('🤖 LANBot está Online 24/7 na Render!');
+}).listen(PORT, () => {
+    console.log(`🌐 Servidor HTTP ativo na porta ${PORT} para o Render.`);
+});
+
+// =========================
 // Login
 // =========================
 client.login(process.env.TOKEN);

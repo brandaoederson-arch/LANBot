@@ -5,7 +5,7 @@ const ids = require('../config/ids.json');
 const clanConfig = require('../config/pubgClan.json');
 const { sendLog } = require('./logger');
 const { fetchJson } = require('./http');
-const { updatePubgRoles } = require('./pubgRoleManager');
+const { updatePubgRoles } = require('./pubgRoles');
 const { generateClanAiAnalysis } = require('./pubgAiAnalyst');
 
 const SNAPSHOT_FILE = path.join(__dirname, '../data/pubgHistorySnapshots.json');
@@ -151,7 +151,7 @@ function calculatePlayerMetrics(stats) {
 
     const kills = stats.kills || 0;
     const losses = stats.losses || (rounds - (stats.wins || 0));
-     = losses > 0 ? Number((kills / losses).toFixed(2)) : kills;
+    const kdRatio = losses > 0 ? Number((kills / losses).toFixed(2)) : kills;
 
     const avgDamage = Math.round((stats.damageDealt || 0) / rounds);
     const winRate = Number((((stats.wins || 0) / rounds) * 100).toFixed(1));

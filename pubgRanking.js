@@ -69,8 +69,8 @@ async function getAccountIdsBatch(names) {
     const map = {};
     if (!names || names.length === 0) return map;
 
-    // Divide em lotes de 8 para evitar URLs muito longas e respeitar o limite de taxa da API
-    const chunkSize = 8;
+    // Divide em lotes de 5 para garantir aceitação total da API da Krafton
+    const chunkSize = 5;
     for (let i = 0; i < names.length; i += chunkSize) {
         const chunk = names.slice(i, i + chunkSize);
         const namesParam = chunk.map(n => encodeURIComponent(n)).join(',');
@@ -89,7 +89,7 @@ async function getAccountIdsBatch(names) {
                     }
                 }
             }
-            await new Promise(r => setTimeout(r, 6000)); // Aguarda 6s entre requisições para evitar HTTP 429
+            await new Promise(r => setTimeout(r, 1200));
         } catch (e) {
             console.log(`⚠ Erro ao buscar IDs do lote de jogadores:`, e.message);
         }

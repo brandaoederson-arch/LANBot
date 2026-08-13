@@ -4,7 +4,6 @@
         "platform": "TikTok",
         "handle": "@edersonbrandao",
         "url": "https://www.tiktok.com/@edersonbrandao",
-        "rssUrl": "https://rsshub.app/tiktok/user/edersonbrandao",
         "mustContainPubg": false
     },
     {
@@ -12,35 +11,34 @@
         "platform": "YouTube",
         "handle": "@Aquillizz",
         "url": "https://www.youtube.com/@Aquillizz",
-        "rssUrl": "https://www.youtube.com/feeds/videos.xml?user=Aquillizz",
         "mustContainPubg": false
     },
     {
         "name": "Romanov Gamer",
         "platform": "YouTube",
-        "handle": "@RomanovGamer",
-        "rssUrl": "https://www.youtube.com/feeds/videos.xml?user=RomanovGamer",
-        "mustContainPubg": true
+        "handle": "@romanovgameroficial",
+        "url": "https://www.youtube.com/@romanovgameroficial",
+        "mustContainPubg": false
     },
     {
         "name": "Ivanz1to",
         "platform": "YouTube",
-        "handle": "@ivanz1to",
-        "rssUrl": "https://www.youtube.com/feeds/videos.xml?user=ivanz1to",
-        "mustContainPubg": true
+        "handle": "@ivanz1to_",
+        "url": "https://www.youtube.com/@ivanz1to_",
+        "mustContainPubg": false
     },
     {
         "name": "Thauê Neves",
         "platform": "YouTube",
         "handle": "@ThaueNeves",
-        "rssUrl": "https://www.youtube.com/feeds/videos.xml?user=ThaueNeves",
-        "mustContainPubg": true
+        "url": "https://www.youtube.com/@ThaueNeves",
+        "mustContainPubg": false
     },
     {
         "name": "Netenho",
         "platform": "YouTube",
-        "handle": "@Netenho",
-        "rssUrl": "https://www.youtube.com/feeds/videos.xml?user=Netenho",
-        "mustContainPubg": true
+        "handle": "@netenho1",
+        "url": "https://www.youtube.com/@netenho1",
+        "mustContainPubg": false
     }
 ]

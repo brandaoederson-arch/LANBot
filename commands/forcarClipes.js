@@ -1,5 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { checkClips, updateExistingClipMessages, autoCleanExpiredClips } = require('../services/clipWatcher');
+const { runPubgNewsSystem } = require('../services/pubgNewsSystem');
 const ids = require('../config/ids.json');
 
 module.exports = {
@@ -16,12 +17,14 @@ module.exports = {
             const totalNovos = await checkClips(interaction.client);
             await updateExistingClipMessages(interaction.client);
             const totalDeletados = await autoCleanExpiredClips(interaction.client);
+            await runPubgNewsSystem(interaction.client);
 
-            const clipsChannelId = ids.channels.clipes || '1528963592693612665';
+            const clipsChannelId = ids.channels.pubgReport || '1528963592693612665';
+            const creatorChannelId = ids.channels.videosEClipes || '1536847149369921596';
 
-            let msg = `✅ **Varredura concluída!** O canal <#${clipsChannelId}> foi limpo e organizado!`;
+            let msg = `✅ **Varredura concluída!** Os canais <#${clipsChannelId}> e <#${creatorChannelId}> foram atualizados!`;
             if (totalNovos > 0) msg += `\n🔥 **${totalNovos} novo(s) clipe(s)** publicado(s).`;
-            if (totalDeletados > 0) msg += `\n🧹 **${totalDeletados} clipe(s) antigo(s)/expirado(s)** removido(s) para manter o canal limpo.`;
+            if (totalDeletados > 0) msg += `\n🧹 **${totalDeletados} clipe(s) antigo(s)/expirado(s)** removido(s).`;
 
             await interaction.editReply(msg);
         } catch (error) {

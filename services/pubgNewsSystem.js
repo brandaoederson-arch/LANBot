@@ -1,4 +1,3 @@
-const Parser = require('rss-parser');
 const { EmbedBuilder } = require('discord.js');
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -7,12 +6,6 @@ const ids = require('../config/ids.json');
 const creatorsConfig = require('../config/pubgCreators.json');
 const { fetchJson } = require('./http');
 const { translateToPtBr } = require('./translator');
-
-const parser = new Parser({
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-    }
-});
 
 const DATA_FILE = path.join(__dirname, '../data/publishedPubgNewsSystem.json');
 const CHECK_INTERVAL = 30 * 60 * 1000; // 30 minutos
@@ -27,9 +20,8 @@ const HIGH_PRIORITY_KEYWORDS = [
 ];
 
 const BLOCKED_KEYWORDS = [
-    'shorts', '#shorts', 'live completa', 'vod', 'gameplay casual', 'gameplay', 'highlights',
-    'kills', 'compilação', 'compilacao', 'rumor', 'vazamento', 'leak', 'polêmica', 'polemica',
-    'cancelado', 'curiosidade', 'melhor arma da temporada'
+    'shorts', '#shorts', 'live completa', 'vod', 'gameplay casual', 'highlights',
+    'kills', 'compilação', 'compilacao', 'rumor', 'vazamento', 'leak', 'polêmica', 'polemica'
 ];
 
 let publishedHistory = new Set();
@@ -76,6 +68,44 @@ function extractImage(contents) {
     return null;
 }
 
+// Scraper leve para buscar os últimos vídeos do YouTube de um criador por handle (@handle)
+async function fetchYouTubeCreatorVideos(handle) {
+    try {
+        const url = `https://www.youtube.com/${handle}/videos`;
+        const html = await fetchJson(url, {
+            timeout: 10000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                'Accept-Language': 'pt-BR,pt;q=0.9'
+            }
+        });
+
+        const videos = [];
+        const videoMatches = [...html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})".*?"title":\{"runs":\[\{"text":"([^"]+)"\}/g)];
+
+        const seenIds = new Set();
+        for (const match of videoMatches) {
+            const videoId = match[1];
+            const title = match[2];
+            if (!seenIds.has(videoId)) {
+                seenIds.add(videoId);
+                videos.push({
+                    id: videoId,
+                    title: title,
+                    url: `https://www.youtube.com/watch?v=${videoId}`,
+                    thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+                });
+            }
+            if (videos.length >= 3) break;
+        }
+
+        return videos;
+    } catch (e) {
+        console.log(`⚠ Erro ao buscar vídeos do YouTube (${handle}):`, e.message);
+        return [];
+    }
+}
+
 // 🔴 1. Processa Notícias Oficiais da KRAFTON / PUBG via Steam API (Com Layout Premium em PT-BR)
 async function checkOfficialPubgNews(channel) {
     let publishedCount = 0;
@@ -104,7 +134,8 @@ async function checkOfficialPubgNews(channel) {
             const descriptionPtBr = await translateToPtBr(rawDescription.slice(0, 350));
 
             const formattedDescription =
-                `📌 **Resumo do Comunicado:**\n${descriptionPtBr}${rawDescription.length > 350 ? '...' : ''}\n\n` +
+                `📌 **Resumo do Comunicado:**\n\n` +
+                `${descriptionPtBr}${rawDescription.length > 350 ? '...' : ''}\n\n\n` +
                 `👉 **[Clique aqui para ler o anúncio completo na Steam](${item.url})**`;
 
             const embed = new EmbedBuilder()
@@ -138,26 +169,29 @@ async function checkOfficialPubgNews(channel) {
     return publishedCount;
 }
 
-// 🟡 2. Processa Vídeos da Lista Branca de Criadores Aprovados (Exclusivo para #videos-e-clips ID 1536847149369921596)
-async function checkCreatorAnalyses(client, newsChannel) {
+// 🟡 2. Processa Vídeos da Lista Branca de Criadores Aprovados (Exclusivo para #videos-e-clipes ID 1536847149369921596)
+async function checkCreatorAnalyses(client) {
     let publishedCount = 0;
 
     const clipsChannelId = ids.channels.videosEClipes || '1536847149369921596';
     const clipsChannel = await client.channels.fetch(clipsChannelId).catch(() => null);
 
+    if (!clipsChannel) {
+        console.log(`⚠ Canal #videos-e-clipes (ID ${clipsChannelId}) não encontrado.`);
+        return 0;
+    }
+
     for (const creator of creatorsConfig) {
-        if (!creator.rssUrl) continue;
+        if (creator.platform !== 'YouTube') continue;
 
         try {
-            const feed = await parser.parseURL(creator.rssUrl);
-            const items = (feed.items || []).slice(0, 4);
+            const items = await fetchYouTubeCreatorVideos(creator.handle);
 
             for (const item of items) {
-                const guid = `pubg-creator-${item.id || item.link || item.title}`;
+                const guid = `pubg-creator-yt-${item.id}`;
                 if (publishedHistory.has(guid)) continue;
 
-                const title = (item.title || '').trim();
-                const textLower = `${title} ${item.contentSnippet || ''}`.toLowerCase();
+                const textLower = `${item.title}`.toLowerCase();
 
                 if (creator.mustContainPubg && !textLower.includes('pubg') && !textLower.includes('battlegrounds')) {
                     publishedHistory.add(guid);
@@ -169,42 +203,44 @@ async function checkCreatorAnalyses(client, newsChannel) {
                     continue;
                 }
 
-                const titlePtBr = await translateToPtBr(title);
-                const dateStr = item.pubDate ? new Date(item.pubDate).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recente';
+                const titlePtBr = await translateToPtBr(item.title);
 
                 const formattedDescription =
-                    `📺 **${creator.name}** publicou um novo vídeo/análise em português no canal!\n\n` +
-                    `▶ **[Clique aqui para assistir ao vídeo no YouTube](${item.link})**`;
+                    `📺 **${creator.name}** publicou um novo vídeo/análise no YouTube!\n\n` +
+                    `▶ **[Clique aqui para assistir ao vídeo no YouTube](${item.url})**`;
 
                 const embed = new EmbedBuilder()
                     .setColor(0xF2A900)
-                    .setAuthor({ name: `🎥 VÍDEO & ANÁLISE • ${creator.name.toUpperCase()} (${creator.platform || 'YouTube'})` })
+                    .setAuthor({ name: `🎥 VÍDEO & ANÁLISE • ${creator.name.toUpperCase()} (YouTube)` })
                     .setTitle(`🎬 ${titlePtBr}`)
-                    .setURL(item.link)
+                    .setURL(item.url)
                     .setDescription(formattedDescription)
                     .addFields(
                         { name: '👤 Criador Aprovado', value: `\`${creator.name}\``, inline: true },
-                        { name: '📅 Publicado em', value: `\`${dateStr}\``, inline: true }
+                        { name: '🌐 Plataforma', value: `\`YouTube\``, inline: true }
                     )
                     .setFooter({ text: 'Vídeos & Clipes • Clã SO NO TCHEREREU' })
-                    .setTimestamp(item.pubDate ? new Date(item.pubDate) : new Date());
+                    .setTimestamp();
 
-                if (clipsChannel) {
-                    const sentClips = await clipsChannel.send({
-                        content: `🎥 **Novo vídeo de ${creator.name}!** ${item.link}`,
-                        embeds: [embed]
-                    });
-                    await sentClips.react('🎬').catch(() => null);
-                    await sentClips.react('🔥').catch(() => null);
+                if (item.thumbnail) {
+                    embed.setImage(item.thumbnail);
                 }
+
+                const sentClips = await clipsChannel.send({
+                    content: `🎥 **Novo vídeo de ${creator.name}!** ${item.url}`,
+                    embeds: [embed]
+                });
+                await sentClips.react('🎬').catch(() => null);
+                await sentClips.react('🔥').catch(() => null);
 
                 publishedHistory.add(guid);
                 publishedCount++;
 
-                console.log(`✅ Vídeo do Criador (${creator.name}) publicado em #videos-e-clips: ${titlePtBr}`);
+                console.log(`✅ Vídeo de ${creator.name} publicado em #videos-e-clipes: ${titlePtBr}`);
+                await new Promise(r => setTimeout(r, 800));
             }
         } catch (e) {
-            console.log(`⚠ Aviso ao buscar feed do criador ${creator.name}:`, e.message);
+            console.log(`⚠ Aviso ao buscar vídeos do criador ${creator.name}:`, e.message);
         }
     }
 
@@ -214,19 +250,19 @@ async function checkCreatorAnalyses(client, newsChannel) {
 // Executor Principal do Sistema de Notícias PUBG
 async function runPubgNewsSystem(client) {
     const channelId = ids.channels.pubgNoticias || ids.channels.noticias;
-    if (!channelId) return;
-
     const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel) return;
 
     console.log('\n========================================');
-    console.log('🔫 Executando Curadoria de Notícias PUBG & Criadores com Layout Premium...');
+    console.log('🔫 Executando Curadoria de Notícias PUBG & Vídeos dos Criadores...');
     console.log('========================================');
 
     await loadHistory();
 
-    const officialCount = await checkOfficialPubgNews(channel);
-    const creatorCount = await checkCreatorAnalyses(client, channel);
+    let officialCount = 0;
+    if (channel) {
+        officialCount = await checkOfficialPubgNews(channel);
+    }
+    const creatorCount = await checkCreatorAnalyses(client);
 
     const totalNew = officialCount + creatorCount;
 
@@ -244,7 +280,7 @@ function startPubgNewsSystem(client) {
         runPubgNewsSystem(client);
     }, CHECK_INTERVAL);
 
-    console.log('⏰ Sistema de Notícias PUBG com Layout Premium ativo e verificando a cada 30 minutos.');
+    console.log('⏰ Sistema de Notícias PUBG & Vídeos dos Criadores ativo e verificando a cada 30 minutos.');
 }
 
 module.exports = {

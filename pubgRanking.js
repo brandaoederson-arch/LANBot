@@ -300,6 +300,18 @@ async function updatePubgRanking(client) {
         const previousSnapshot = loadSnapshot();
         saveSnapshot(rankedPlayers);
 
+        // Salva o último ranking em pubgLastRanking.json para uso de comandos como /analise-ia
+        try {
+            fs.writeFileSync(LAST_RANKING_FILE, JSON.stringify({
+                seasonId: currentSeasonId,
+                updatedAt: new Date().toISOString(),
+                players: rankedPlayers
+            }, null, 4));
+            console.log('💾 Ranking atualizado salvo em pubgLastRanking.json com sucesso.');
+        } catch (errLast) {
+            console.log('⚠ Erro ao salvar pubgLastRanking.json:', errLast.message);
+        }
+
         // Gera a análise do clã feita pela IA Gemini
         let aiAnalysisText = '';
         try {

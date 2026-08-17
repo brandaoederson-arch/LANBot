@@ -91,16 +91,10 @@ for (const file of eventFiles) {
 }
 
 // =========================
-// Servidor HTTP para Render
+// Servidor Web & Dashboard 3D
 // =========================
-const http = require('http');
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('🤖 LANBot está Online 24/7 na Render!');
-}).listen(PORT, () => {
-    console.log(`🌐 Servidor HTTP ativo na porta ${PORT} para o Render.`);
-});
+const { initWebServer } = require('./services/webServer');
+initWebServer(client);
 
 // =========================
 // Login

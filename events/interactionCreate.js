@@ -1,13 +1,17 @@
 const { handleSetupButtonClick, handleSetupModalSubmit, handleSetupSelectMenu } = require('../services/setupManager');
+const { handleRadioInteraction } = require('../services/radioManager');
 
 module.exports = {
     name: 'interactionCreate',
 
     async execute(interaction, client) {
-        // Trata clique nos botões do Setup
+        // Trata clique nos botões do Setup e Rádio
         if (interaction.isButton()) {
             if (interaction.customId.startsWith('btn_cadastrar_setup')) {
                 return await handleSetupButtonClick(interaction);
+            }
+            if (interaction.customId.startsWith('radio_btn_')) {
+                return await handleRadioInteraction(interaction, client);
             }
         }
 
@@ -18,10 +22,13 @@ module.exports = {
             }
         }
 
-        // Trata seleções das Listas Suspensas do Setup (se houver)
+        // Trata seleções das Listas Suspensas do Setup e Rádio
         if (interaction.isStringSelectMenu()) {
             if (interaction.customId.startsWith('select_setup_')) {
                 return await handleSetupSelectMenu(interaction);
+            }
+            if (interaction.customId === 'radio_select_station') {
+                return await handleRadioInteraction(interaction, client);
             }
         }
 

@@ -7,6 +7,8 @@ const { startPubgNewsSystem } = require('../services/pubgNewsSystem');
 const { startPubgWebSystem } = require('../services/pubgWebSystem');
 const { startTikTokWatcher } = require('../services/tiktokWatcher');
 const { sendOrUpdateSetupPanel } = require('../services/setupManager');
+const { sendOrUpdateRolesPanel } = require('../services/rolesManager');
+const { sendOrUpdateRadioPanel } = require('../services/radioManager');
 const { deploySlashCommands } = require('../services/commandDeployer');
 const { sendLog } = require('../services/logger');
 
@@ -46,5 +48,11 @@ module.exports = {
 
         console.log('💻 Atualizando Painel do Canal #setup...');
         await sendOrUpdateSetupPanel(client).catch(err => console.log('⚠ Erro no painel de setup:', err.message));
+
+        console.log('🎭 Atualizando Painel do Canal #cargos...');
+        await sendOrUpdateRolesPanel(client).catch(err => console.log('⚠ Erro no painel de cargos:', err.message));
+
+        console.log('📻 Atualizando Painel do Canal #radio...');
+        await sendOrUpdateRadioPanel(client).catch(err => console.log('⚠ Erro no painel de rádio:', err.message));
     },
 };

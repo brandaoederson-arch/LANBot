@@ -51,12 +51,13 @@ async function fetchJson(url, options = {}) {
 
             clearTimeout(timer);
 
-            // Se retornar Retry-After, e for 429, respeitamos
+            // Se retornar Retry-After, e for 429, respeitamos com tempo suficiente de janela
             if (res.status === 429) {
                 const ra = res.headers?.get ? res.headers.get('retry-after') : null;
-                const waitMs = ra ? (isNaN(Number(ra)) ? 1000 : Math.ceil(Number(ra) * 1000)) : Math.min(2000 * attempt, 10000);
+                const waitMs = ra ? (isNaN(Number(ra)) ? 15000 : Math.ceil(Number(ra) * 1000)) : Math.min(15000 * attempt, 45000);
+                console.log(`⏳ [Rate Limit API] HTTP 429 atingido. Aguardando ${(waitMs/1000).toFixed(0)}s para a API da Krafton liberar (tentativa ${attempt}/${retries})...`);
                 await wait(waitMs);
-                lastError = new Error(`HTTP ${res.status} (429) - tentativa ${attempt}`);
+                lastError = new Error(`HTTP 429 (Rate Limit Exceeded) - tentativa ${attempt}`);
                 if (attempt > retries) throw lastError;
                 continue;
             }

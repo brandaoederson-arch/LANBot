@@ -12,10 +12,17 @@ const SNAPSHOT_FILE = path.join(__dirname, '../data/pubgHistorySnapshots.json');
 const LAST_RANKING_FILE = path.join(__dirname, '../data/pubgLastRanking.json');
 const RANKING_MESSAGE_FILE = path.join(__dirname, '../data/pubgRankingMessage.json');
 
-const PUBG_API_BASE = 'https://api.pubg.report/v1';
+const PUBG_API_BASE = 'https://api.pubg.com/shards/steam';
 const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24 horas
 
 let isUpdating = false;
+
+function getHeaders() {
+    return {
+        'Authorization': `Bearer ${process.env.PUBG_API_KEY}`,
+        'Accept': 'application/vnd.api+json'
+    };
+}
 
 function loadSnapshot() {
     try {
@@ -57,30 +64,43 @@ function formatNumber(val) {
     return Number(val).toLocaleString('pt-BR');
 }
 
+// Busca os Account IDs oficiais na Krafton em lotes
 async function getAccountIdsBatch(names) {
     const map = {};
-    for (const name of names) {
+    if (!names || names.length === 0) return map;
+
+    // Divide em lotes de 5 para garantir aceitação total da API da Krafton
+    const chunkSize = 5;
+    for (let i = 0; i < names.length; i += chunkSize) {
+        const chunk = names.slice(i, i + chunkSize);
+        const namesParam = chunk.map(n => encodeURIComponent(n)).join(',');
+
         try {
-            const url = `${PUBG_API_BASE}/players?filter[playerNames]=${encodeURIComponent(name)}`;
-            const res = await fetchJson(url, { timeout: 8000, retries: 2, headers: { 'User-Agent': 'Mozilla/5.0' } });
+            const url = `${PUBG_API_BASE}/players?filter[playerNames]=${namesParam}`;
+            const res = await fetchJson(url, { timeout: 10000, retries: 2, headers: getHeaders() });
 
             if (res?.data && res.data.length > 0) {
-                const found = res.data.find(p => p.attributes?.name?.toLowerCase() === name.toLowerCase()) || res.data[0];
-                if (found) {
-                    map[found.attributes.name] = found.id;
+                for (const p of res.data) {
+                    if (p.attributes?.name && p.id) {
+                        map[p.attributes.name.toLowerCase()] = {
+                            id: p.id,
+                            officialName: p.attributes.name
+                        };
+                    }
                 }
             }
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 1200));
         } catch (e) {
-            console.log(`⚠ Erro ao buscar ID do jogador ${name}:`, e.message);
+            console.log(`⚠ Erro ao buscar IDs do lote de jogadores:`, e.message);
         }
     }
     return map;
 }
 
+// Busca a Temporada Atual ativa no PUBG (ex: division.bro.official.pc-2018-42)
 async function getCurrentSeasonId() {
     try {
-        const res = await fetchJson(`${PUBG_API_BASE}/seasons`, { timeout: 8000, retries: 2, headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const res = await fetchJson(`${PUBG_API_BASE}/seasons`, { timeout: 10000, retries: 2, headers: getHeaders() });
 
         if (res?.data && res.data.length > 0) {
             const current = res.data.find(s => s.attributes?.isCurrentSeason);
@@ -88,61 +108,65 @@ async function getCurrentSeasonId() {
             return res.data[res.data.length - 1].id;
         }
     } catch (e) {
-        console.log('⚠ Erro ao buscar temporada atual do PUBG, usando fallback:', e.message);
+        console.log('⚠ Erro ao buscar temporada atual do PUBG na Krafton:', e.message);
     }
-    return 'division.bro.official.pc-2018-30';
+    return 'division.bro.official.pc-2018-42';
 }
 
+// Busca as estatísticas da temporada para um jogador específico
 async function getSeasonStats(accountId, seasonId) {
-    const url = `${PUBG_API_BASE}/players/${accountId}/seasons/${seasonId}`;
-    const res = await fetchJson(url, { timeout: 8000, retries: 2, headers: { 'User-Agent': 'Mozilla/5.0' } });
-    return res?.data?.attributes?.gameModeStats || {};
+    try {
+        const url = `${PUBG_API_BASE}/players/${accountId}/seasons/${seasonId}`;
+        const res = await fetchJson(url, { timeout: 12000, retries: 4, headers: getHeaders() });
+        return res?.data?.attributes?.gameModeStats || {};
+    } catch (e) {
+        console.log(`⚠ Erro ao buscar estatísticas da temporada (${accountId}):`, e.message);
+        return {};
+    }
 }
 
-function aggregateAllGameModes(statsObj) {
-    if (!statsObj) return null;
-
-    const total = {
+function aggregateStatsForMode(gameModeStats, modeFilter) {
+    let aggregated = {
         roundsPlayed: 0,
         wins: 0,
-        top10s: 0,
         kills: 0,
-        assists: 0,
-        dbnos: 0,
         damageDealt: 0,
+        top10s: 0,
         headshotKills: 0,
-        longestKill: 0,
-        timeSurvived: 0,
+        assists: 0,
         revives: 0,
         losses: 0
     };
 
     let hasData = false;
 
-    for (const [modeName, modeData] of Object.entries(statsObj)) {
-        if (!modeData || !modeData.roundsPlayed || modeData.roundsPlayed === 0) continue;
-
-        hasData = true;
-
-        total.roundsPlayed += modeData.roundsPlayed || 0;
-        total.wins += modeData.wins || 0;
-        total.top10s += modeData.top10s || 0;
-        total.kills += modeData.kills || 0;
-        total.assists += modeData.assists || 0;
-        total.dbnos += modeData.dbnos || 0;
-        total.damageDealt += modeData.damageDealt || 0;
-        total.headshotKills += modeData.headshotKills || 0;
-        total.revives += modeData.revives || 0;
-        total.losses += modeData.losses || 0;
-
-        if ((modeData.longestKill || 0) > total.longestKill) {
-            total.longestKill = modeData.longestKill;
+    for (const [mode, stats] of Object.entries(gameModeStats)) {
+        let match = false;
+        if (modeFilter === 'squad') {
+            match = mode.includes('squad');
+        } else if (modeFilter === 'duo') {
+            match = mode.includes('duo');
+        } else if (modeFilter === 'solo') {
+            match = mode.includes('solo') && !mode.includes('squad') && !mode.includes('duo');
+        } else {
+            match = true; // Todos os modos combinados se não especificado
         }
 
-        total.timeSurvived += modeData.timeSurvived || 0;
+        if (match && stats && stats.roundsPlayed > 0) {
+            hasData = true;
+            aggregated.roundsPlayed += stats.roundsPlayed || 0;
+            aggregated.wins += stats.wins || 0;
+            aggregated.kills += stats.kills || 0;
+            aggregated.damageDealt += stats.damageDealt || 0;
+            aggregated.top10s += stats.top10s || 0;
+            aggregated.headshotKills += stats.headshotKills || 0;
+            aggregated.assists += stats.assists || 0;
+            aggregated.revives += stats.revives || 0;
+            aggregated.losses += stats.losses || (stats.roundsPlayed - (stats.wins || 0));
+        }
     }
 
-    return hasData ? total : null;
+    return hasData ? aggregated : null;
 }
 
 function calculatePlayerMetrics(stats) {
@@ -163,429 +187,241 @@ function calculatePlayerMetrics(stats) {
     return {
         roundsPlayed: rounds,
         wins: stats.wins || 0,
-        top10s: stats.top10s || 0,
-        kills,
-        assists: stats.assists || 0,
-        dbnos: stats.dbnos || 0,
+        kills: kills,
         damageDealt: Math.round(stats.damageDealt || 0),
-        avgDamage,
-        headshotKills: stats.headshotKills || 0,
-        longestKill: Math.round(stats.longestKill || 0),
-        timeSurvived: Math.round(stats.timeSurvived || 0),
-        revives: stats.revives || 0,
-        kd,
-        winRate,
-        top10Rate,
-        headshotRate,
-        assistsPerMatch,
-        revivesPerMatch
+        kd: kdRatio,
+        avgDamage: avgDamage,
+        winRate: winRate,
+        top10Rate: top10Rate,
+        headshotRate: headshotRate,
+        assistsPerMatch: assistsPerMatch,
+        revivesPerMatch: revivesPerMatch
     };
 }
 
-function calculateIDC(players, previousSnapshot = {}) {
-    if (!players || players.length === 0) return [];
-
-    const minMatches = 5;
-    const filtered = players.filter(p => p.roundsPlayed >= minMatches);
-    const pool = filtered.length > 0 ? filtered : players;
-
-    const max = {
-        avgDamage: Math.max(...pool.map(p => p.avgDamage), 1),
-        kd: Math.max(...pool.map(p => p.kd), 0.1),
-        winRate: Math.max(...pool.map(p => p.winRate), 1),
-        top10Rate: Math.map(p => p.top10Rate).length ? Math.max(...pool.map(p => p.top10Rate), 1) : 1,
-        assistsPerMatch: Math.max(...pool.map(p => p.assistsPerMatch), 0.1),
-        revivesPerMatch: Math.max(...pool.map(p => p.revivesPerMatch), 0.1)
-    };
-
-    const WEIGHTS = {
-        avgDamage: 0.30,
-        kd: 0.25,
-        winRate: 0.15,
-        top10Rate: 0.10,
-        assistsPerMatch: 0.08,
-        revivesPerMatch: 0.07,
-        consistency: 0.05
-    };
-
-    const scored = pool.map(player => {
-        const prev = previousSnapshot[player.name];
-        let consistency = 50;
-
-        if (prev) {
-            const damageDiff = player.avgDamage - (prev.avgDamage || player.avgDamage);
-            const kdDiff = player.kd - (prev.kd || player.kd);
-
-            if (damageDiff >= 0 && kdDiff >= 0) consistency = 90;
-            else if (damageDiff >= 0 || kdDiff >= 0) consistency = 70;
-            else consistency = 35;
-        }
-
-        const normalized = {
-            avgDamage: Math.min(player.avgDamage / max.avgDamage, 1),
-            kd: Math.min(player.kd / max.kd, 1),
-            winRate: Math.min(player.winRate / max.winRate, 1),
-            top10Rate: Math.min(player.top10Rate / max.top10Rate, 1),
-            assistsPerMatch: Math.min(player.assistsPerMatch / max.assistsPerMatch, 1),
-            revivesPerMatch: Math.min(player.revivesPerMatch / max.revivesPerMatch, 1)
-        };
-
-        const score =
-            normalized.avgDamage * WEIGHTS.avgDamage +
-            normalized.kd * WEIGHTS.kd +
-            normalized.winRate * WEIGHTS.winRate +
-            normalized.top10Rate * WEIGHTS.top10Rate +
-            normalized.assistsPerMatch * WEIGHTS.assistsPerMatch +
-            normalized.revivesPerMatch * WEIGHTS.revivesPerMatch +
-            (consistency / 100) * WEIGHTS.consistency;
-
-        return {
-            ...player,
-            consistency,
-            idc: Math.round(score * 1000)
-        };
-    }).sort((a, b) => b.idc - a.idc);
-
-    return scored.map((player, index) => ({
-        ...player,
-        rank: index + 1
-    }));
+function calculateIDC(metrics) {
+    if (!metrics || metrics.roundsPlayed === 0) return 0;
+    const idc = (metrics.kd * 35) + (metrics.avgDamage * 0.35) + (metrics.winRate * 2.0) + (metrics.top10Rate * 0.8);
+    return Number(idc.toFixed(1));
 }
 
-function attachSubRankings(rankedPlayers) {
-    const miraRanking = [...rankedPlayers].sort((a, b) => b.headshotRate - a.headshotRate);
-    const sobrevivenciaRanking = [...rankedPlayers].sort((a, b) => b.winRate - a.winRate);
-
-    return rankedPlayers.map(player => ({
-        ...player,
-        miraRank: miraRanking.findIndex(p => p.name === player.name) + 1,
-        sobrevivenciaRank: sobrevivenciaRanking.findIndex(p => p.name === player.name) + 1
-    }));
-}
-
-function saveLastRanking(rankedPlayers, seasonId) {
-    try {
-        fs.writeFileSync(
-            LAST_RANKING_FILE,
-            JSON.stringify(
-                {
-                    seasonId,
-                    updatedAt: new Date().toISOString(),
-                    players: rankedPlayers
-                },
-                null,
-                4
-            )
-        );
-    } catch (error) {
-        console.log('⚠ Erro ao salvar dados completos do ranking.');
-    }
-}
-
-function getEvolutionLine(player, previousSnapshot) {
-    const prev = previousSnapshot[player.name];
-
-    if (!prev) {
-        return '🆕 Novo';
-    }
-
-    const rankDiff = prev.rank - player.rank;
-    const idcDiff = player.idc - prev.idc;
-    const idcTexto = idcDiff >= 0 ? `+${idcDiff}` : `${idcDiff}`;
-
-    if (rankDiff > 0) {
-        return `⬆️ +${rankDiff} pos (${idcTexto} pts)`;
-    } else if (rankDiff < 0) {
-        return `⬇️ ${rankDiff} pos (${idcTexto} pts)`;
-    } else {
-        return `⏹ Mantida (${idcTexto} pts)`;
-    }
-}
-
-function getMedalEmoji(rank) {
-    if (rank === 1) return '🥇';
-    if (rank === 2) return '🥈';
-    if (rank === 3) return '🥉';
-    return '🎖️';
-}
-
-async function buildRankingCategoryEmbed(client, rankedPlayers, seasonId, previousSnapshot, category) {
-    const isGeral = category === 'geral';
-
-    const title = isGeral
-        ? '🏆 RANKING OFICIAL DO CLÃ • IDC (100% TPP & FPP FULL)'
-        : `🏆 RANKING DO CLÃ • MODO ${category.toUpperCase()}`;
-
-    const description = isGeral
-        ? `Temporada Atual: \`${seasonId}\`\nCalculado agregando 100% das estatísticas oficiais (TPP + FPP, Solo, Duo, Squad).`
-        : `Temporada Atual: \`${seasonId}\`\nRanking exclusivo para partidas no modo ${category.toUpperCase()}.`;
-
-    const embed = new EmbedBuilder()
-        .setColor(isGeral ? 0xF1C40F : 0x3498DB)
-        .setTitle(title)
-        .setDescription(description)
-        .setTimestamp();
-
-    if (!rankedPlayers || rankedPlayers.length === 0) {
-        embed.addFields({ name: 'Aviso', value: 'Nenhum membro jogou partidas suficientes neste modo ainda.' });
-        return embed;
-    }
-
-    const top10 = rankedPlayers.slice(0, 10);
-
-    for (const player of top10) {
-        const medal = getMedalEmoji(player.rank);
-        const evo = getEvolutionLine(player, previousSnapshot);
-
-        const fieldTitle = `${medal} #${player.rank} • ${player.name.toUpperCase()}`;
-        const fieldValue =
-            `🏆 **IDC:** \`${player.idc} pts\` • **Evolução:** ${evo}\n` +
-            `⚔️ **K/D:** \`${player.kd}\` | 💥 **Dano Médio:** \`${player.avgDamage}\` | 📊 **Partidas:** \`${player.roundsPlayed}\`\n` +
-            `🎯 **Headshot:** \`${player.headshotRate}%\` | 👑 **Vitórias:** \`${player.wins}\` (${player.winRate}%)\n` +
-            `🤝 **Assist:** \`${player.assists}\` | 🩺 **Reanimações:** \`${player.revives}\``;
-
-        embed.addFields({ name: fieldTitle, value: fieldValue });
-    }
-
-    return embed;
-}
-
-function buildHighlightsEmbed(rankedPlayers) {
-    if (!rankedPlayers || rankedPlayers.length === 0) {
-        return new EmbedBuilder()
-            .setColor(0xE67E22)
-            .setTitle('🌟 DESTAQUES DA TEMPORADA')
-            .setDescription('Nenhum dado disponível para destaques.');
-    }
-
-    const maxDamage = [...rankedPlayers].sort((a, b) => b.avgDamage - a.avgDamage)[0];
-    const maxKd = [...rankedPlayers].sort((a, b) => b.kd - a.kd)[0];
-    const maxWins = [...rankedPlayers].sort((a, b) => b.wins - a.wins)[0];
-    const maxHeadshot = [...rankedPlayers].sort((a, b) => b.headshotRate - a.headshotRate)[0];
-    const maxRevives = [...rankedPlayers].sort((a, b) => b.revives - a.revives)[0];
-
-    const embed = new EmbedBuilder()
-        .setColor(0xE67E22)
-        .setTitle('🌟 DESTAQUES & RECONHECIMENTO DO CLÃ')
-        .setDescription('Confira os líderes em cada fundamento do combate:')
-        .addFields(
-            {
-                name: '💥 Maior Poder de Fogo (Dano Médio)',
-                value: `👑 **${maxDamage.name}** com \`${maxDamage.avgDamage}\` de dano médio por partida!`,
-                inline: false
-            },
-            {
-                name: '⚔️ Maior Letalidade (K/D Ratio)',
-                value: `💀 **${maxKd.name}** lidera com K/D de \`${maxKd.kd}\`!`,
-                inline: false
-            },
-            {
-                name: '👑 Campeão de Vitórias (Top 1)',
-                value: `🏆 **${maxWins.name}** acumulou \`${maxWins.wins}\` vitórias!`,
-                inline: false
-            },
-            {
-                name: '🎯 Atirador de Elite (Precisão de Headshot)',
-                value: `🎯 **${maxHeadshot.name}** com \`${maxHeadshot.headshotRate}%\` dos abates por headshot!`,
-                inline: false
-            },
-            {
-                name: '🩺 Anjo do Resgate (Mais Reanimações)',
-                value: `🤝 **${maxRevives.name}** salvou companheiros \`${maxRevives.revives}\` vezes!`,
-                inline: false
-            }
-        )
-        .setTimestamp();
-
-    return embed;
-}
-
-async function buildAiAnalystEmbed(rankedPlayers) {
-    const aiAnalysisText = await generateClanAiAnalysis(rankedPlayers);
-
-    const embed = new EmbedBuilder()
-        .setColor(0x9B59B6)
-        .setTitle('🤖 ANÁLISE TÁTICA DA INTELIGÊNCIA ARTIFICIAL')
-        .setDescription(aiAnalysisText)
-        .setFooter({ text: 'Sistema de Análise Técnica de Performance • Clã SO NO TCHEREREU' })
-        .setTimestamp();
-
-    return embed;
-}
-
-function buildStatsEmbed(rankedPlayers) {
-    const totais = rankedPlayers.reduce((acc, player) => {
-        acc.roundsPlayed += player.roundsPlayed;
-        acc.kills += player.kills;
-        acc.wins += player.wins;
-        acc.damageDealt += player.damageDealt;
-        acc.revives += player.revives;
-        acc.assists += player.assists;
-        acc.timeSurvived += player.timeSurvived;
-        return acc;
-    }, { roundsPlayed: 0, kills: 0, wins: 0, damageDealt: 0, revives: 0, assists: 0, timeSurvived: 0 });
-
-    const horasJogadas = Math.round(totais.timeSurvived / 3600);
-
-    const embed = new EmbedBuilder()
-        .setColor(0x2ECC71)
-        .setTitle('📊 ESTATÍSTICAS GERAIS DO CLÃ (100% TPP & FPP FULL)')
-        .addFields(
-            { name: '👥 Total de Membros', value: `\`${rankedPlayers.length}\``, inline: true },
-            { name: '🎮 Partidas Jogadas', value: `\`${formatNumber(totais.roundsPlayed)}\``, inline: true },
-            { name: '🏆 Vitórias Totais', value: `\`${formatNumber(totais.wins)}\``, inline: true },
-
-            { name: '💀 Abates Totais', value: `\`${formatNumber(totais.kills)}\``, inline: true },
-            { name: '🔥 Dano Causado', value: `\`${formatNumber(totais.damageDealt)}\``, inline: true },
-            { name: '⏳ Horas em Combate', value: `\`${formatNumber(horasJogadas)} hrs\``, inline: true }
-        )
-        .setTimestamp();
-
-    return embed;
-}
-
-async function runPubgRanking(client) {
+async function updatePubgRanking(client) {
     if (isUpdating) {
-        console.log('⏸ Atualização do ranking já está em andamento — pedido ignorado para evitar conflito.');
-        await sendLog(client, {
-            type: 'warning',
-            title: '⏸ Ranking PUBG: atualização ignorada',
-            description: 'Já havia uma atualização em andamento. Aguarde a atual terminar antes de forçar novamente.'
-        });
+        console.log('⏳ Atualização do Ranking PUBG já em andamento. Ignorando chamada concorrente.');
         return;
     }
 
     isUpdating = true;
 
-    console.log('\n========================================');
-    console.log('🏆 Atualizando ranking do clã no PUBG (Agregando 100% TPP & FPP Full)...');
-    console.log('========================================');
-
     try {
-        const accountIdsMap = await getAccountIdsBatch(clanConfig.members);
-        const foundNames = Object.keys(accountIdsMap);
+        console.log('\n========================================');
+        console.log('🏆 Iniciando atualização do Ranking Oficial PUBG...');
+        console.log('========================================');
 
-        const notFound = clanConfig.members.filter(name =>
-            !foundNames.some(found => found.toLowerCase() === name.toLowerCase())
-        );
-
-        if (notFound.length > 0) {
-            console.log(`⚠ Jogadores não encontrados na Steam: ${notFound.join(', ')}`);
-            await sendLog(client, {
-                type: 'warning',
-                title: '⚠ Ranking PUBG: jogadores não encontrados',
-                description: notFound.join(', ')
-            });
-        }
-
-        const seasonId = await getCurrentSeasonId();
-        const playersDataGeral = [];
-
-        for (const [name, accountId] of Object.entries(accountIdsMap)) {
-            try {
-                console.log(`🔍 Buscando estatísticas oficiais de ${name} (100% TPP & FPP Full)...`);
-                const stats = await getSeasonStats(accountId, seasonId);
-                const aggregatedRaw = aggregateAllGameModes(stats);
-                const metrics = aggregatedRaw ? calculatePlayerMetrics(aggregatedRaw) : null;
-
-                if (metrics) {
-                    playersDataGeral.push({ name, ...metrics });
-                } else {
-                    console.log(`⚠ ${name} sem partidas nesta temporada.`);
-                }
-            } catch (error) {
-                console.log(`❌ Erro ao buscar ${name}: ${error.message}`);
-            }
-        }
-
-        if (playersDataGeral.length === 0) {
-            console.log('❌ Nenhum jogador com dados suficientes para gerar ranking.');
-            await sendLog(client, {
-                type: 'error',
-                title: '🔴 Ranking PUBG: sem dados suficientes',
-                description: 'Nenhum membro do clã tem partidas registradas nesta temporada.'
-            });
+        const rankingChannelId = ids.channels.rankingPubg;
+        if (!rankingChannelId) {
+            console.log('⚠ Canal de ranking (rankingPubg) não configurado em ids.json.');
+            isUpdating = false;
             return;
         }
+
+        const channel = await client.channels.fetch(rankingChannelId).catch(() => null);
+        if (!channel) {
+            console.log(`⚠ Canal com ID ${rankingChannelId} não encontrado.`);
+            isUpdating = false;
+            return;
+        }
+
+        const membersList = clanConfig.members || [];
+        if (membersList.length === 0) {
+            console.log('⚠ Nenhum membro configurado em pubgClan.json.');
+            isUpdating = false;
+            return;
+        }
+
+        const currentSeasonId = await getCurrentSeasonId();
+        console.log(`📌 Temporada ativa no PUBG: ${currentSeasonId}`);
+
+        const accountMap = await getAccountIdsBatch(membersList);
+        const rankedPlayers = [];
+
+        console.log(`📡 Coletando estatísticas da temporada para os membros do clã (aguardando 10s para estabilizar rate limit)...`);
+        await new Promise(r => setTimeout(r, 10000));
+
+        for (const name of membersList) {
+            const playerInfo = accountMap[name.toLowerCase()];
+            if (!playerInfo) {
+                console.log(`⚪ Membro ${name} não encontrado na API da Krafton.`);
+                continue;
+            }
+
+            const gameModeStats = await getSeasonStats(playerInfo.id, currentSeasonId);
+            const aggregated = aggregateStatsForMode(gameModeStats, clanConfig.gameMode || 'squad');
+
+            if (aggregated && aggregated.roundsPlayed > 0) {
+                const metrics = calculatePlayerMetrics(aggregated);
+                if (metrics) {
+                    const idc = calculateIDC(metrics);
+                    rankedPlayers.push({
+                        name: playerInfo.officialName || name,
+                        idc: idc,
+                        ...metrics
+                    });
+                }
+            } else {
+                console.log(`⚪ ${name}: sem partidas no modo ${clanConfig.gameMode || 'squad'} nesta temporada.`);
+            }
+
+            await new Promise(r => setTimeout(r, 7000)); // Aguarda 7s entre chamadas para respeitar o limite de 10 req/min da Krafton
+        }
+
+        if (rankedPlayers.length === 0) {
+            console.log('⚠ Nenhum membro possui partidas na temporada atual.');
+            await channel.send({
+                embeds: [
+                    new EmbedBuilder()
+                        .setColor(0xE74C3C)
+                        .setTitle('🔴 Ranking PUBG: sem dados suficientes')
+                        .setDescription('Nenhum membro do clã tem partidas registradas na temporada atual no modo selecionado.')
+                        .setTimestamp()
+                ]
+            });
+            isUpdating = false;
+            return;
+        }
+
+        // Ordena do maior IDC para o menor IDC
+        rankedPlayers.sort((a, b) => b.idc - a.idc);
+
+        // Atribui as posições no ranking
+        rankedPlayers.forEach((p, idx) => {
+            p.rank = idx + 1;
+        });
 
         const previousSnapshot = loadSnapshot();
+        saveSnapshot(rankedPlayers);
 
-        let rankedGeral = calculateIDC(playersDataGeral, previousSnapshot);
-        rankedGeral = attachSubRankings(rankedGeral);
-
-        const embedGeral = await buildRankingCategoryEmbed(client, rankedGeral, seasonId, previousSnapshot, 'geral');
-        const embedDestaques = buildHighlightsEmbed(rankedGeral);
-        const embedAiAnalyst = await buildAiAnalystEmbed(rankedGeral);
-        const embedEstatisticas = buildStatsEmbed(rankedGeral);
-
-        saveSnapshot(rankedGeral);
-        saveLastRanking(rankedGeral, seasonId);
-
-        const channel = await client.channels.fetch(ids.channels.rankingPubg).catch(() => null);
-
-        if (!channel) {
-            console.log('❌ Canal de ranking não encontrado.');
-            return;
+        // Salva o último ranking em pubgLastRanking.json para uso de comandos como /analise-ia
+        try {
+            fs.writeFileSync(LAST_RANKING_FILE, JSON.stringify({
+                seasonId: currentSeasonId,
+                updatedAt: new Date().toISOString(),
+                players: rankedPlayers
+            }, null, 4));
+            console.log('💾 Ranking atualizado salvo em pubgLastRanking.json com sucesso.');
+        } catch (errLast) {
+            console.log('⚠ Erro ao salvar pubgLastRanking.json:', errLast.message);
         }
 
-        let messageId = null;
-        if (fs.existsSync(RANKING_MESSAGE_FILE)) {
-            const saved = JSON.parse(fs.readFileSync(RANKING_MESSAGE_FILE, 'utf8'));
-            messageId = saved.messageId;
+        // Gera a análise do clã feita pela IA Gemini
+        let aiAnalysisText = '';
+        try {
+            console.log('🤖 Gerando análise estatística do clã via IA...');
+            aiAnalysisText = await generateClanAiAnalysis(rankedPlayers, currentSeasonId);
+        } catch (aiErr) {
+            console.log('⚠ Aviso ao gerar análise por IA:', aiErr.message);
         }
 
-        if (messageId) {
-            const oldMessage = await channel.messages.fetch(messageId).catch(() => null);
-            if (oldMessage) {
-                await oldMessage.delete().catch(() => null);
+        // Constrói o Embed Principal de Tabela do Ranking
+        const rankingEmbed = new EmbedBuilder()
+            .setColor(0xF1C40F) // Dourado
+            .setTitle('🏆 RANKING OFICIAL DO CLÃ — GSNT / UMA LAN LÁ EM CASA')
+            .setDescription(
+                `📊 **Temporada Ativa:** \`${currentSeasonId}\`  |  🎮 **Modo:** \`${(clanConfig.gameMode || 'squad').toUpperCase()}\`\n` +
+                `*Atualizado automaticamente a cada 24 horas.*`
+            )
+            .setTimestamp();
+
+        let tableText = '```md\n#  | NICK            | IDC   | K/D  | DANO  | PARTIDAS | VITORIAS\n';
+        tableText += '---|-----------------|-------|------|-------|----------|---------\n';
+
+        rankedPlayers.slice(0, 15).forEach((p) => {
+            const rankStr = String(p.rank).padStart(2, ' ');
+            const nameStr = p.name.padEnd(15, ' ').slice(0, 15);
+            const idcStr = String(p.idc).padStart(5, ' ');
+            const kdStr = String(p.kd).padStart(4, ' ');
+            const dmgStr = String(p.avgDamage).padStart(5, ' ');
+            const rdsStr = String(p.roundsPlayed).padStart(8, ' ');
+            const winStr = String(p.wins).padStart(7, ' ');
+
+            tableText += `${rankStr} | ${nameStr} | ${idcStr} | ${kdStr} | ${dmgStr} | ${rdsStr} | ${winStr}\n`;
+        });
+
+        tableText += '```';
+        rankingEmbed.addFields({ name: '🥇 TABELA DE LÍDERES DO CLÃ', value: tableText });
+
+        // Destaques de Líderes em Categorias Específicas
+        const topKd = [...rankedPlayers].sort((a, b) => b.kd - a.kd)[0];
+        const topDmg = [...rankedPlayers].sort((a, b) => b.avgDamage - a.avgDamage)[0];
+        const topWins = [...rankedPlayers].sort((a, b) => b.wins - a.wins)[0];
+
+        rankingEmbed.addFields(
+            { name: '🔥 Maior K/D', value: `👤 **${topKd.name}** (\`${topKd.kd}\` K/D)`, inline: true },
+            { name: '💥 Maior Dano Médio', value: `👤 **${topDmg.name}** (\`${formatNumber(topDmg.avgDamage)}\` Dmg)`, inline: true },
+            { name: '👑 Mais Vitórias', value: `👤 **${topWins.name}** (\`${topWins.wins}\` W)`, inline: true }
+        );
+
+        // Call-To-Action Amigável no Rodapé do Embed
+        rankingEmbed.setFooter({
+            text: '💡 Para incluir seus dados no ranking use /vincular nick:<seu_nick> | Para análise por IA use /analise-ia'
+        });
+
+        // Envia ou atualiza a mensagem fixa do Ranking
+        let rankingMessageId = null;
+        try {
+            if (fs.existsSync(RANKING_MESSAGE_FILE)) {
+                rankingMessageId = JSON.parse(fs.readFileSync(RANKING_MESSAGE_FILE, 'utf8'))?.messageId;
+            }
+        } catch (e) {}
+
+        let sentMsg = null;
+        if (rankingMessageId) {
+            const existingMsg = await channel.messages.fetch(rankingMessageId).catch(() => null);
+            if (existingMsg) {
+                sentMsg = await existingMsg.edit({ embeds: [rankingEmbed] }).catch(() => null);
             }
         }
 
-        const allEmbeds = [embedGeral, embedDestaques, embedAiAnalyst, embedEstatisticas];
-        const contentText = '💡 **Dicas da Comunidade:**\n' +
-            '• Para incluir ou atualizar seus dados no ranking, use o comando `/vincular nick:<seu_nick>`!\n' +
-            '• Para uma avaliação dedicada do seu desempenho feita pela IA, use o comando `/analise-ia`!';
+        if (!sentMsg) {
+            sentMsg = await channel.send({ embeds: [rankingEmbed] });
+            fs.writeFileSync(RANKING_MESSAGE_FILE, JSON.stringify({ messageId: sentMsg.id }, null, 4));
+        }
 
-        const sentMessage = await channel.send({
-            content: contentText,
-            embeds: allEmbeds
-        });
+        // Se houver análise por IA, publica em um embed dedicado logo abaixo
+        if (aiAnalysisText) {
+            const aiEmbed = new EmbedBuilder()
+                .setColor(0x9B59B6) // Roxo Inteligência Artificial
+                .setTitle('🤖 ANÁLISE TÁTICA DO CLÃ PELA IA')
+                .setDescription(aiAnalysisText)
+                .setFooter({ text: 'Análise automática gerada por Inteligência Artificial • Clã SO NO TCHEREREU' })
+                .setTimestamp();
 
-        fs.writeFileSync(
-            RANKING_MESSAGE_FILE,
-            JSON.stringify({ messageId: sentMessage.id }, null, 4)
-        );
+            await channel.send({ embeds: [aiEmbed] });
+        }
 
-        console.log('✅ Ranking do PUBG + Análise Tática da IA publicados com sucesso!');
+        // Atualiza os cargos automáticos dos membros no Discord com base nas posições do Ranking
+        console.log('🏷️ Atualizando cargos de destaque do clã no Discord...');
+        await updatePubgRoles(client, rankedPlayers).catch(e => console.log('⚠ Erro ao atualizar cargos:', e.message));
 
-        await updatePubgRoles(channel.guild, rankedGeral);
-
-        console.log('🏁 Atualização completa do ranking finalizada.\n');
+        console.log(`🏁 Atualização do Ranking PUBG concluída com sucesso! ${rankedPlayers.length} membro(s) ranqueado(s).\n`);
     } catch (error) {
-        console.log('❌ Erro geral ao atualizar ranking do PUBG.');
-        console.log(error.message);
-
-        await sendLog(client, {
-            type: 'error',
-            title: '🔴 Ranking PUBG: falha na atualização',
-            description: error.message
-        });
+        console.error('❌ Erro crítico na atualização do Ranking PUBG:', error);
     } finally {
         isUpdating = false;
     }
 }
 
 function startPubgRankingScheduler(client) {
-    runPubgRanking(client);
+    updatePubgRanking(client);
 
     setInterval(() => {
-        runPubgRanking(client);
+        updatePubgRanking(client);
     }, UPDATE_INTERVAL);
 
-    console.log('⏰ Ranking PUBG configurado para atualizar a cada 24h a partir da inicialização do bot.');
+    console.log('⏰ Agendador do Ranking PUBG ativo (Atualiza a cada 24 horas).');
 }
 
 module.exports = {
-    runPubgRanking,
-    startPubgRankingScheduler
+    startPubgRankingScheduler,
+    updatePubgRanking
 };

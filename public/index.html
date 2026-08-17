@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LANBot Radio 3D — Rádios ao Vivo pelo Mundo</title>
+    <meta name="description" content="Explore rádios ao vivo ao redor do mundo em um globo 3D interativo e transmita no Discord com o LANBot.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome / Lucide Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="/css/style.css">
+    
+    <!-- Three.js & Globe.gl CDN -->
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/globe.gl@2.32.0/dist/globe.gl.min.js"></script>
+</head>
+<body>
+    <!-- App Container -->
+    <div id="app">
+        <!-- Background 3D Canvas Container -->
+        <div id="globe-container"></div>
+        
+        <!-- UI Overlay -->
+        <div class="ui-layer">
+            
+            <!-- Header Bar -->
+            <header class="navbar glass-panel">
+                <div class="brand">
+                    <div class="logo-icon">
+                        <i class="fa-solid fa-earth-americas glow-icon"></i>
+                    </div>
+                    <div class="brand-text">
+                        <h1>LANBot <span>Radio 3D</span></h1>
+                        <p class="clan-badge">CLÃ SO NO TCHEREREU</p>
+                    </div>
+                </div>
+
+                <!-- Search & Filters -->
+                <div class="search-container">
+                    <div class="search-box glass-input">
+                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                        <input type="text" id="search-input" placeholder="Buscar rádio, país, cidade ou gênero (ex: Lo-Fi, Synthwave, Brasil)..." autocomplete="off">
+                        <button id="clear-search" class="icon-btn hidden"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    
+                    <!-- Quick Suggestions Dropdown -->
+                    <div id="search-results" class="search-dropdown glass-panel hidden"></div>
+                </div>
+
+                <!-- Action Controls -->
+                <div class="header-actions">
+                    <button id="btn-random" class="btn btn-neon btn-pulse" title="Sintonizar rádio aleatória pelo mundo">
+                        <i class="fa-solid fa-dice-d20"></i>
+                        <span>Surpreenda-me</span>
+                    </button>
+                    
+                    <button id="btn-favorites-toggle" class="btn btn-glass" title="Rádios Favoritas">
+                        <i class="fa-solid fa-star text-gold"></i>
+                        <span id="fav-count" class="badge">0</span>
+                    </button>
+                    
+                    <div id="discord-status-badge" class="status-indicator offline" title="Status do Bot de Voz">
+                        <span class="dot"></span>
+                        <span class="status-label">Bot Offline</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Genre Quick Tags -->
+            <div class="genre-bar glass-panel">
+                <span class="genre-label"><i class="fa-solid fa-filter"></i> Estilos:</span>
+                <div class="genre-tags">
+                    <button class="tag-btn active" data-genre="all">Todos</button>
+                    <button class="tag-btn" data-genre="synthwave">⚡ Synthwave</button>
+                    <button class="tag-btn" data-genre="lofi">☕ Lo-Fi</button>
+                    <button class="tag-btn" data-genre="rock">🎸 Rock</button>
+                    <button class="tag-btn" data-genre="pop">🎧 Pop</button>
+                    <button class="tag-btn" data-genre="jazz">🎷 Jazz</button>
+                    <button class="tag-btn" data-genre="gaming">🎮 Gaming</button>
+                    <button class="tag-btn" data-genre="news">📰 Notícias</button>
+                    <button class="tag-btn" data-genre="brazil">🇧🇷 Brasil</button>
+                </div>
+            </div>
+
+            <!-- Left Floating Panel: Station Details & List -->
+            <aside id="sidebar" class="sidebar glass-panel hidden">
+                <div class="sidebar-header">
+                    <h3 id="sidebar-title"><i class="fa-solid fa-list-ul"></i> Estações Encontradas</h3>
+                    <button id="close-sidebar" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div id="station-list" class="station-list">
+                    <!-- Station Items Injected Here -->
+                </div>
+            </aside>
+
+            <!-- Bottom Floating Player -->
+            <footer id="player-panel" class="player-panel glass-panel">
+                <div class="player-content">
+                    
+                    <!-- Station Info -->
+                    <div class="station-meta">
+                        <div class="station-avatar" id="station-avatar">
+                            <i class="fa-solid fa-radio"></i>
+                        </div>
+                        <div class="station-info">
+                            <div class="station-title-row">
+                                <h2 id="player-station-name">Selecione uma rádio no Globo</h2>
+                                <button id="btn-fav-current" class="icon-btn-fav" title="Adicionar aos Favoritos">
+                                    <i class="fa-regular fa-star"></i>
+                                </button>
+                            </div>
+                            <div class="station-subinfo">
+                                <span id="player-country" class="meta-tag"><i class="fa-solid fa-globe"></i> Clique em qualquer ponto no mapa</span>
+                                <span id="player-codec" class="meta-tag badge-dark hidden">MP3</span>
+                                <span id="player-bitrate" class="meta-tag badge-dark hidden">128 kbps</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Audio Visualizer Canvas -->
+                    <div class="visualizer-container">
+                        <canvas id="audio-visualizer" width="300" height="48"></canvas>
+                    </div>
+
+                    <!-- Audio Controls -->
+                    <div class="player-controls">
+                        <button id="btn-play-pause" class="btn-play" disabled title="Tocar / Pausar">
+                            <i class="fa-solid fa-play"></i>
+                        </button>
+                        
+                        <div class="volume-control">
+                            <button id="btn-mute" class="icon-btn"><i class="fa-solid fa-volume-high"></i></button>
+                            <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="0.8">
+                        </div>
+                    </div>
+
+                    <!-- Discord Voice Stream Control -->
+                    <div class="discord-stream-control">
+                        <select id="voice-channel-select" class="glass-select">
+                            <option value="">Selecione o Canal de Voz...</option>
+                        </select>
+                        <button id="btn-discord-transmit" class="btn btn-discord" disabled title="Transmitir esta rádio no canal de voz do Discord">
+                            <i class="fa-brands fa-discord"></i>
+                            <span>Tocar no Discord</span>
+                        </button>
+                    </div>
+
+                </div>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Script Application -->
+    <script src="/js/app.js"></script>
+</body>
+</html>

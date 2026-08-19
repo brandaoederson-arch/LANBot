@@ -6,9 +6,10 @@ const clanConfig = require('../config/pubgClan.json');
 const { sendLog } = require('./logger');
 const { fetchJson } = require('./http');
 const { updatePubgRoles } = require('./pubgRoles');
-const { generateClanAiAnalysis } = require('./pubgAiAnalyst');
+const { calculateAdvancedPerformanceData, saveHistorySnapshot } = require('./pubgPerformanceData');
+const { generatePubgAiAnalysis } = require('./pubgAiAnalyst');
 
-const SNAPSHOT_FILE = path.join(__dirname, '../data/pubgHistorySnapshots.json');
+const SNAPSHOT_FILE = path.join(__dirname, '../data/pubgLastSnapshotByPlayer.json');
 const LAST_RANKING_FILE = path.join(__dirname, '../data/pubgLastRanking.json');
 const RANKING_MESSAGE_FILE = path.join(__dirname, '../data/pubgRankingMessage.json');
 
@@ -53,9 +54,9 @@ function saveSnapshot(rankedPlayers) {
         }
 
         fs.writeFileSync(SNAPSHOT_FILE, JSON.stringify(snapshot, null, 4));
-        console.log('💾 Histórico de snapshot do ranking salvo com sucesso.');
+        console.log('💾 Histórico de snapshot por jogador salvo com sucesso.');
     } catch (error) {
-        console.log('⚠ Erro ao salvar histórico de ranking.');
+        console.log('⚠ Erro ao salvar histórico de ranking por jogador.');
     }
 }
 
@@ -108,19 +109,45 @@ async function getCurrentSeasonId() {
             return res.data[res.data.length - 1].id;
         }
     } catch (e) {
-        console.log('⚠ Erro ao buscar temporada atual do PUBG na Krafton:', e.message);
+        console.log('⚠ Erro ao buscar temporada atual do PUBG na Krafton:', e);
     }
-    return 'division.bro.official.pc-2018-42';
+
+    // Tenta fallback com a temporada em cache salva anteriormente
+    try {
+        if (fs.existsSync(LAST_RANKING_FILE)) {
+            const cache = JSON.parse(fs.readFileSync(LAST_RANKING_FILE, 'utf8'));
+            if (cache?.seasonId) {
+                console.log(`📌 Usando temporada em cache: ${cache.seasonId}`);
+                return cache.seasonId;
+            }
+        }
+    } catch (eCache) {
+        console.log('⚠ Erro ao ler seasonId do cache:', eCache.message);
+    }
+
+    return null;
 }
 
-// Busca as estatísticas da temporada para um jogador específico
+// Busca as estatísticas normais/casuais da temporada para um jogador específico
 async function getSeasonStats(accountId, seasonId) {
     try {
         const url = `${PUBG_API_BASE}/players/${accountId}/seasons/${seasonId}`;
-        const res = await fetchJson(url, { timeout: 10000, retries: 2, headers: getHeaders() });
+        const res = await fetchJson(url, { timeout: 12000, retries: 4, headers: getHeaders() });
         return res?.data?.attributes?.gameModeStats || {};
     } catch (e) {
-        console.log(`⚠ Erro ao buscar estatísticas da temporada (${accountId}):`, e.message);
+        console.log(`⚠ Erro ao buscar estatísticas normais da temporada (${accountId}):`, e.message);
+        return {};
+    }
+}
+
+// Busca as estatísticas ranked (competitivas) da temporada para um jogador específico
+async function getRankedSeasonStats(accountId, seasonId) {
+    try {
+        const url = `${PUBG_API_BASE}/players/${accountId}/seasons/${seasonId}/ranked`;
+        const res = await fetchJson(url, { timeout: 12000, retries: 4, headers: getHeaders() });
+        return res?.data?.attributes?.rankedGameModeStats || {};
+    } catch (e) {
+        console.log(`⚠ Erro ao buscar estatísticas ranked da temporada (${accountId}):`, e.message);
         return {};
     }
 }
@@ -189,6 +216,8 @@ function calculatePlayerMetrics(stats) {
         wins: stats.wins || 0,
         kills: kills,
         damageDealt: Math.round(stats.damageDealt || 0),
+        assists: stats.assists || 0,
+        revives: stats.revives || 0,
         kd: kdRatio,
         avgDamage: avgDamage,
         winRate: winRate,
@@ -240,12 +269,24 @@ async function updatePubgRanking(client) {
         }
 
         const currentSeasonId = await getCurrentSeasonId();
+        if (!currentSeasonId) {
+            console.log('❌ Não foi possível determinar a temporada ativa do PUBG. Atualização cancelada para evitar inconsistências.');
+            await sendLog(client, {
+                type: 'error',
+                title: '❌ Falha na Atualização do Ranking PUBG',
+                description: 'Não foi possível determinar a temporada ativa na API da Krafton e não há cache válido.'
+            }).catch(() => null);
+            isUpdating = false;
+            return;
+        }
+
         console.log(`📌 Temporada ativa no PUBG: ${currentSeasonId}`);
 
         const accountMap = await getAccountIdsBatch(membersList);
         const rankedPlayers = [];
 
-        console.log(`📡 Coletando estatísticas da temporada para os membros do clã...`);
+        console.log(`📡 Coletando estatísticas (Normais + Ranked) para os membros do clã...`);
+        await new Promise(r => setTimeout(r, 10000));
 
         for (const name of membersList) {
             const playerInfo = accountMap[name.toLowerCase()];
@@ -255,7 +296,28 @@ async function updatePubgRanking(client) {
             }
 
             const gameModeStats = await getSeasonStats(playerInfo.id, currentSeasonId);
-            const aggregated = aggregateStatsForMode(gameModeStats, clanConfig.gameMode || 'squad');
+            await new Promise(r => setTimeout(r, 6500)); // Intervalo de 6.5s entre chamada normal e ranked (respeita rate limit da Krafton)
+
+            const rankedGameModeStats = await getRankedSeasonStats(playerInfo.id, currentSeasonId);
+
+            let aggregated = aggregateStatsForMode(gameModeStats, clanConfig.gameMode || 'squad');
+            const aggregatedRanked = aggregateStatsForMode(rankedGameModeStats, clanConfig.gameMode || 'squad');
+
+            if (aggregatedRanked) {
+                if (!aggregated) {
+                    aggregated = aggregatedRanked;
+                } else {
+                    aggregated.roundsPlayed += aggregatedRanked.roundsPlayed || 0;
+                    aggregated.wins += aggregatedRanked.wins || 0;
+                    aggregated.kills += aggregatedRanked.kills || 0;
+                    aggregated.damageDealt += aggregatedRanked.damageDealt || 0;
+                    aggregated.top10s += aggregatedRanked.top10s || 0;
+                    aggregated.headshotKills += aggregatedRanked.headshotKills || 0;
+                    aggregated.assists += aggregatedRanked.assists || 0;
+                    aggregated.revives += aggregatedRanked.revives || 0;
+                    aggregated.losses += aggregatedRanked.losses || 0;
+                }
+            }
 
             if (aggregated && aggregated.roundsPlayed > 0) {
                 const metrics = calculatePlayerMetrics(aggregated);
@@ -268,10 +330,10 @@ async function updatePubgRanking(client) {
                     });
                 }
             } else {
-                console.log(`⚪ ${name}: sem partidas no modo ${clanConfig.gameMode || 'squad'} nesta temporada.`);
+                console.log(`⚪ ${name}: sem partidas registradas nesta temporada.`);
             }
 
-            await new Promise(r => setTimeout(r, 6000)); // Aguarda 6s entre chamadas para respeitar o limite de 10 req/min
+            await new Promise(r => setTimeout(r, 6500)); // Intervalo de 6.5s antes do próximo jogador (total ~9.2 req/min, seguro < 10 req/min)
         }
 
         if (rankedPlayers.length === 0) {
@@ -297,7 +359,7 @@ async function updatePubgRanking(client) {
             p.rank = idx + 1;
         });
 
-        const previousSnapshot = loadSnapshot();
+        // Salva snapshot individual por jogador para setas de variação
         saveSnapshot(rankedPlayers);
 
         // Salva o último ranking em pubgLastRanking.json para uso de comandos como /analise-ia
@@ -312,13 +374,23 @@ async function updatePubgRanking(client) {
             console.log('⚠ Erro ao salvar pubgLastRanking.json:', errLast.message);
         }
 
-        // Gera a análise do clã feita pela IA Gemini
+        // Gera a análise do clã feita pela IA comparando com o histórico anterior
         let aiAnalysisText = '';
         try {
             console.log('🤖 Gerando análise estatística do clã via IA...');
-            aiAnalysisText = await generateClanAiAnalysis(rankedPlayers, currentSeasonId);
+            const perfData = calculateAdvancedPerformanceData(rankedPlayers);
+            if (perfData) {
+                aiAnalysisText = await generatePubgAiAnalysis(perfData);
+            }
         } catch (aiErr) {
             console.log('⚠ Aviso ao gerar análise por IA:', aiErr.message);
+        }
+
+        // Salva o snapshot na série temporal APÓS o cálculo da IA (para 7d/30d não incluir hoje no delta de histórico)
+        try {
+            saveHistorySnapshot(rankedPlayers);
+        } catch (errHist) {
+            console.log('⚠ Erro ao salvar histórico de série temporal:', errHist.message);
         }
 
         // Constrói o Embed Principal de Tabela do Ranking
@@ -400,7 +472,11 @@ async function updatePubgRanking(client) {
 
         // Atualiza os cargos automáticos dos membros no Discord com base nas posições do Ranking
         console.log('🏷️ Atualizando cargos de destaque do clã no Discord...');
-        await updatePubgRoles(client, rankedPlayers).catch(e => console.log('⚠ Erro ao atualizar cargos:', e.message));
+        if (channel.guild) {
+            await updatePubgRoles(channel.guild, rankedPlayers).catch(e => console.log('⚠ Erro ao atualizar cargos:', e.message));
+        } else {
+            console.log('⚠ Objeto guild não encontrado no canal.');
+        }
 
         console.log(`🏁 Atualização do Ranking PUBG concluída com sucesso! ${rankedPlayers.length} membro(s) ranqueado(s).\n`);
     } catch (error) {
@@ -411,11 +487,34 @@ async function updatePubgRanking(client) {
 }
 
 function startPubgRankingScheduler(client) {
-    updatePubgRanking(client);
+    let delay = 0;
 
-    setInterval(() => {
+    try {
+        if (fs.existsSync(LAST_RANKING_FILE)) {
+            const raw = fs.readFileSync(LAST_RANKING_FILE, 'utf8');
+            const data = JSON.parse(raw);
+            if (data?.updatedAt) {
+                const lastUpdate = new Date(data.updatedAt).getTime();
+                const elapsed = Date.now() - lastUpdate;
+                if (elapsed < UPDATE_INTERVAL) {
+                    delay = UPDATE_INTERVAL - elapsed;
+                    console.log(`⏳ Último ranking foi atualizado há ${Math.round(elapsed / 60000)} min. Próxima atualização agendada em ${Math.round(delay / 60000)} min.`);
+                }
+            }
+        }
+    } catch (err) {
+        console.log('⚠ Erro ao verificar histórico de execução no agendador:', err.message);
+    }
+
+    if (delay > 0) {
+        setTimeout(() => {
+            updatePubgRanking(client);
+            setInterval(() => updatePubgRanking(client), UPDATE_INTERVAL);
+        }, delay);
+    } else {
         updatePubgRanking(client);
-    }, UPDATE_INTERVAL);
+        setInterval(() => updatePubgRanking(client), UPDATE_INTERVAL);
+    }
 
     console.log('⏰ Agendador do Ranking PUBG ativo (Atualiza a cada 24 horas).');
 }
